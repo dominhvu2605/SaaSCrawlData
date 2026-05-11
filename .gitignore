@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+build/
+
+# Environment
+.env
+.env.local
+.env.production
+.env.development
+.env*.local
+.env.staging
+.env.test
+
+# Claude
+CLAUDE.md
+
+# Prisma
+prisma/dev.db
+prisma/*.db-journal
+
+# Misc
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Scripts (compiled output)
+scripts/*.js
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

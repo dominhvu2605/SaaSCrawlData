@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Plan {
+  TRIAL
+  BASIC
+  PLUS
+  PRO
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id               String     @id @default(cuid())
+  email            String     @unique
+  name             String
+  password         String
+  emailVerified    Boolean    @default(false)
+  verifyToken      String?    @unique
+  verifyTokenExp   DateTime?
+  resetToken       String?    @unique
+  resetTokenExp    DateTime?
+  plan             Plan       @default(TRIAL)
+  trialUsed        Boolean    @default(false)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  crawlJobs        CrawlJob[]
+  schedules        Schedule[]
+  sessions         Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model CrawlJob {
+  id              String    @id @default(cuid())
+  userId          String
+  url             String    @db.Text
+  contentRequest  String    @db.Text
+  status          JobStatus @default(PENDING)
+  progress        Int       @default(0)
+  resultFile      String?
+  resultData      Json?
+  rowCount        Int?
+  errorMessage    String?   @db.Text
+  retryCount      Int       @default(0)
+  maxRetries      Int       @default(3)
+  outputFormat    String    @default("csv")
+  useBrowser      Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  startedAt       DateTime?
+  completedAt     DateTime?
+  scheduleId      String?
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  schedule        Schedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@index([scheduleId])
+  @@map("crawl_jobs")
+}
+
+model Schedule {
+  id              String    @id @default(cuid())
+  userId          String
+  name            String
+  url             String    @db.Text
+  contentRequest  String    @db.Text
+  interval        String    // "hourly" | "daily" | "weekly"
+  outputFormat    String    @default("csv")
+  isActive        Boolean   @default(true)
+  lastRun         DateTime?
+  nextRun         DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobs            CrawlJob[]
+
+  @@index([userId])
+  @@index([nextRun])
+  @@map("schedules")
+}
