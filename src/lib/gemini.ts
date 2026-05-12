@@ -1,7 +1,24 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+// Route outbound requests through proxy if HTTPS_PROXY is set
+// Required on VPS environments that block Google APIs
+const _proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
+if (_proxyUrl) {
+  try {
+    // undici is bundled with Node.js 18+ — patches global fetch
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const undici = require("undici");
+    undici.setGlobalDispatcher(new undici.ProxyAgent(_proxyUrl));
+  } catch {
+    // undici not available, proxy not applied
+  }
+}
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 const MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+const BASE_URL_OPTS = process.env.GEMINI_BASE_URL
+  ? { baseUrl: process.env.GEMINI_BASE_URL }
+  : undefined;
 
 export interface ExtractedData {
   headers: string[];
@@ -18,7 +35,7 @@ export async function extractDataWithGemini(
   url: string,
   existingHeaders?: string[]
 ): Promise<ExtractedData> {
-  const model = genAI.getGenerativeModel({ model: MODEL });
+  const model = genAI.getGenerativeModel({ model: MODEL }, BASE_URL_OPTS);
 
   // Truncate if too large
   const truncated = pageContent.slice(0, MAX_CONTENT_CHARS);
