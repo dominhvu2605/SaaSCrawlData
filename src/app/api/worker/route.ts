@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { crawlUrl } from "@/lib/crawler";
-import { crawlWithBrowser } from "@/lib/crawlerBrowser";
+import { crawlWithBrowser, crawlWithBrowserDeep } from "@/lib/crawlerBrowser";
 import { extractWithRetry } from "@/lib/gemini";
 import { getMaxPages } from "@/lib/planLimits";
 import { addHours, addDays, addWeeks } from "date-fns";
@@ -131,9 +131,11 @@ async function processJob(jobId: string): Promise<void> {
     let summary = "";
 
     if (job.useBrowser) {
-      // Browser mode: paginate then batch-extract
+      // Browser mode: paginate then batch-extract (deep mode also follows product links)
       const maxPages = getMaxPages(job.user.plan);
-      const crawlResult = await crawlWithBrowser(job.url, maxPages);
+      const crawlResult = job.followLinks
+        ? await crawlWithBrowserDeep(job.url, maxPages)
+        : await crawlWithBrowser(job.url, maxPages);
 
       await db.crawlJob.update({ where: { id: jobId }, data: { progress: 30 } });
 

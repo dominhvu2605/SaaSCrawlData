@@ -71,6 +71,7 @@ model CrawlJob {
   maxRetries      Int       @default(3)
   outputFormat    String    @default("csv")
   useBrowser      Boolean   @default(false)
+  followLinks     Boolean   @default(false)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   startedAt       DateTime?

@@ -12,6 +12,7 @@ const CrawlSchema = z.object({
     .max(500),
   outputFormat: z.enum(["csv", "xlsx"]).default("csv"),
   useBrowser: z.boolean().default(false),
+  followLinks: z.boolean().default(false),
 });
 
 // Simple in-memory rate limiter (per IP, resets on server restart)
@@ -68,7 +69,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { url, contentRequest, outputFormat, useBrowser } = parsed.data;
+  const { url, contentRequest, outputFormat, useBrowser, followLinks } = parsed.data;
 
   // Plan limit check (get fresh user data for trial check)
   const freshUser = await db.user.findUnique({ where: { id: user.id } });
@@ -91,7 +92,8 @@ export async function POST(req: NextRequest) {
       url,
       contentRequest,
       outputFormat,
-      useBrowser,
+      useBrowser: useBrowser || followLinks,
+      followLinks,
       status: "PENDING",
     },
   });

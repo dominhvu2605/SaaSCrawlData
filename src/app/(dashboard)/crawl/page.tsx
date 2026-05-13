@@ -20,6 +20,7 @@ export default function CrawlPage() {
     contentRequest: "",
     outputFormat: "csv" as "csv" | "xlsx",
     useBrowser: false,
+    followLinks: false,
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -109,7 +110,7 @@ export default function CrawlPage() {
     stopPolling();
     setJob(null);
     setError("");
-    setForm({ url: "", contentRequest: "", outputFormat: "csv", useBrowser: false });
+    setForm({ url: "", contentRequest: "", outputFormat: "csv", useBrowser: false, followLinks: false });
   }
 
   const isProcessing = job?.status === "PENDING" || job?.status === "PROCESSING";
@@ -203,7 +204,10 @@ export default function CrawlPage() {
                   ? "border-amber-400 bg-amber-50"
                   : "border-gray-200 hover:border-gray-300"
               }`}
-              onClick={() => setForm({ ...form, useBrowser: !form.useBrowser })}
+              onClick={() => {
+                const next = !form.useBrowser;
+                setForm({ ...form, useBrowser: next, followLinks: next ? form.followLinks : false });
+              }}
             >
               <div className={`w-10 h-6 rounded-full flex-shrink-0 relative transition-colors mt-0.5 ${form.useBrowser ? "bg-amber-500" : "bg-gray-300"}`}>
                 <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${form.useBrowser ? "translate-x-5" : "translate-x-1"}`} />
@@ -216,6 +220,37 @@ export default function CrawlPage() {
                   Use a headless browser to handle JavaScript-rendered pages and automatically
                   crawl through all pagination pages (e.g. ASP.NET, DataTables). Slower but
                   handles dynamic content.
+                </p>
+              </div>
+            </div>
+
+            {/* Follow product links toggle (requires browser mode) */}
+            <div
+              className={`flex items-start gap-3 p-4 rounded-lg border transition-colors ${
+                form.followLinks
+                  ? "border-violet-400 bg-violet-50 cursor-pointer"
+                  : form.useBrowser
+                  ? "border-gray-200 hover:border-gray-300 cursor-pointer"
+                  : "border-gray-100 bg-gray-50 opacity-50 cursor-not-allowed"
+              }`}
+              onClick={() => {
+                if (!form.useBrowser) return;
+                setForm({ ...form, followLinks: !form.followLinks });
+              }}
+            >
+              <div className={`w-10 h-6 rounded-full flex-shrink-0 relative transition-colors mt-0.5 ${form.followLinks ? "bg-violet-500" : "bg-gray-300"}`}>
+                <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${form.followLinks ? "translate-x-5" : "translate-x-1"}`} />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-800">
+                  Follow product links (deep crawl)
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Crawl listing pages, then click into each product to extract full detail.
+                  Ideal for e-commerce (Shopify, WooCommerce). Max 100 products per job.
+                  {!form.useBrowser && (
+                    <span className="text-amber-600 font-medium"> Requires browser mode.</span>
+                  )}
                 </p>
               </div>
             </div>
@@ -328,7 +363,8 @@ export default function CrawlPage() {
 
 function getProgressLabel(progress: number): string {
   if (progress < 20) return "Queued...";
-  if (progress < 50) return "Crawling website...";
+  if (progress < 30) return "Crawling listing pages...";
+  if (progress < 50) return "Crawling product detail pages...";
   if (progress < 90) return "Extracting data with AI...";
   return "Saving results...";
 }

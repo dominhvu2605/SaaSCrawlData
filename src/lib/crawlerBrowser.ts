@@ -1,6 +1,6 @@
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import type { Page } from "puppeteer";
+import type { Page, Browser } from "puppeteer";
 import type { CrawlResult } from "./crawler";
 
 puppeteer.use(StealthPlugin());
@@ -10,11 +10,18 @@ export interface BrowserCrawlResult extends CrawlResult {
 }
 
 const PAGE_SETTLE_MS = 1500;
-
-// Resource types to block during pagination — not needed for text extraction
 const BLOCKED_TYPES = new Set(["image", "media", "font"]);
+const MAX_PRODUCT_LINKS = 100;
 
-export async function crawlWithBrowser(url: string, maxPages: number): Promise<BrowserCrawlResult> {
+// ─── Shared browser launch helper ────────────────────────────────────────────
+
+interface BrowserHandle {
+  browser: Browser;
+  page: Page;
+  gotoTarget: (targetUrl: string) => Promise<void>;
+}
+
+async function launchBrowserPage(url: string): Promise<BrowserHandle> {
   const args = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -28,9 +35,6 @@ export async function crawlWithBrowser(url: string, maxPages: number): Promise<B
     "--no-first-run",
   ];
 
-  // Chrome's HTTPS-First mode (active in headless/Incognito) auto-upgrades http:// → https://
-  // and shows an unclickable interstitial when the server has no HTTPS.
-  // This flag marks the specific origin as trusted so Chrome skips the interstitial.
   if (url.startsWith("http://")) {
     try {
       args.push(`--unsafely-treat-insecure-origin-as-secure=${new URL(url).origin}`);
@@ -38,42 +42,48 @@ export async function crawlWithBrowser(url: string, maxPages: number): Promise<B
   }
 
   const browser = await puppeteer.launch({ headless: true, args });
+  const page = await browser.newPage();
+
+  await page.setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  );
+  await page.setViewport({ width: 1280, height: 900 });
+
+  const gotoOpts = { waitUntil: "domcontentloaded" as const, timeout: 60000 };
+
+  const gotoTarget = async (targetUrl: string) => {
+    try {
+      await page.goto(targetUrl, gotoOpts);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("timeout")) {
+        const html = await page.content().catch(() => "");
+        if (html.length >= 500 && !page.url().startsWith("chrome-error://")) return;
+      }
+      throw err;
+    }
+  };
+
+  // Visit root first to let server set session cookies (fixes ASP.NET redirect loops)
+  try {
+    const origin = new URL(url).origin;
+    await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 20000 });
+    await new Promise((r) => setTimeout(r, 800));
+  } catch { /* ignore — best-effort */ }
+
+  return { browser, page, gotoTarget };
+}
+
+// ─── Standard browser crawl (pagination only) ────────────────────────────────
+
+export async function crawlWithBrowser(url: string, maxPages: number): Promise<BrowserCrawlResult> {
+  const { browser, page, gotoTarget } = await launchBrowserPage(url);
 
   try {
-    const page = await browser.newPage();
-
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-    );
-    await page.setViewport({ width: 1280, height: 900 });
-
     // Navigate WITHOUT request interception so the main document loads cleanly.
     // Interception before goto can trigger ERR_BLOCKED_BY_CLIENT on HTTP sites
     // because Chrome's HTTPS-upgrade / navigation throttles interact with CDP
     // request pausing and may cancel the navigation.
-    const gotoOpts = { waitUntil: "domcontentloaded" as const, timeout: 60000 };
-
-    const gotoTarget = async (targetUrl: string) => {
-      try {
-        await page.goto(targetUrl, gotoOpts);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // On timeout, proceed if DOM has usable content
-        if (msg.includes("timeout")) {
-          const html = await page.content().catch(() => "");
-          if (html.length >= 500 && !page.url().startsWith("chrome-error://")) return;
-        }
-        throw err;
-      }
-    };
-
-    // Visit root first to let server set session cookies (fixes ASP.NET redirect loops)
-    try {
-      const origin = new URL(url).origin;
-      await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 20000 });
-      await new Promise((r) => setTimeout(r, 800));
-    } catch { /* ignore — best-effort */ }
-
     await gotoTarget(url);
 
     // Enable interception AFTER the initial load — only affects sub-resource
@@ -127,6 +137,152 @@ export async function crawlWithBrowser(url: string, maxPages: number): Promise<B
   } finally {
     await browser.close();
   }
+}
+
+// ─── Deep browser crawl (listing pages → product detail pages) ───────────────
+
+export async function crawlWithBrowserDeep(url: string, maxPages: number): Promise<BrowserCrawlResult> {
+  const { browser, page, gotoTarget } = await launchBrowserPage(url);
+
+  try {
+    await gotoTarget(url);
+
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      if (BLOCKED_TYPES.has(req.resourceType())) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    await new Promise((r) => setTimeout(r, 1000));
+
+    const origin = new URL(url).origin;
+    const title = await page.title();
+
+    // Phase 1: Paginate through listing pages and collect product links
+    const collectedLinks: string[] = [];
+    const seenLinks = new Set<string>();
+    const seenHashes = new Set<string>();
+
+    for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+      const text = await extractVisibleText(page);
+      const hash = roughHash(text.slice(0, 3000));
+
+      if (seenHashes.has(hash)) break;
+      seenHashes.add(hash);
+
+      const links = await extractProductLinks(page, origin);
+      for (const link of links) {
+        if (!seenLinks.has(link)) {
+          seenLinks.add(link);
+          collectedLinks.push(link);
+        }
+      }
+
+      console.log(
+        `[Crawler] Listing page ${pageNum}: ${links.length} product links (total: ${collectedLinks.length})`
+      );
+
+      if (collectedLinks.length >= MAX_PRODUCT_LINKS) break;
+
+      const moved = await clickNextPage(page);
+      if (!moved) break;
+
+      await new Promise((r) => setTimeout(r, PAGE_SETTLE_MS));
+    }
+
+    const productLinks = collectedLinks.slice(0, MAX_PRODUCT_LINKS);
+    console.log(`[Crawler] Total product links: ${productLinks.length}`);
+
+    // Phase 2: Visit each product detail page and collect text
+    const productPages: string[] = [];
+
+    for (let i = 0; i < productLinks.length; i++) {
+      const productUrl = productLinks[i];
+      try {
+        await gotoTarget(productUrl);
+        await new Promise((r) => setTimeout(r, 1000));
+        const text = await extractVisibleText(page);
+        if (text.trim().length > 50) {
+          productPages.push(`--- Product ${i + 1} ---\n${text}`);
+        }
+        console.log(
+          `[Crawler] Product ${i + 1}/${productLinks.length}: ${text.slice(0, 80).replace(/\n/g, " ")}`
+        );
+      } catch (err) {
+        console.error(`[Crawler] Failed to crawl ${productUrl}:`, err);
+      }
+    }
+
+    const content = productPages.join("\n\n");
+    console.log(
+      `[Crawler] Deep crawl done: ${productPages.length} products, ${content.length} chars`
+    );
+
+    return {
+      content,
+      pages: productPages,
+      title,
+      statusCode: 200,
+      contentType: "text/html",
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
+// ─── Extract product links from current listing page ─────────────────────────
+
+async function extractProductLinks(page: Page, origin: string): Promise<string[]> {
+  return page.evaluate((origin: string) => {
+    // URL path segments that indicate a product detail page
+    const productPathKeywords = ["/products/", "/product/", "/item/", "/p/", "/pd/", "/shop/product"];
+
+    // Common product grid container selectors — prefer these to avoid nav/footer
+    const gridSelectors = [
+      ".product-grid",
+      ".product-list",
+      ".collection-grid",
+      ".products-wrapper",
+      "#product-grid",
+      ".grid--uniform",
+      '[data-product-grid]',
+      'ul[class*="product"]',
+      "main",
+    ];
+
+    let searchRoots: Element[] = [];
+    for (const sel of gridSelectors) {
+      const els = Array.from(document.querySelectorAll(sel));
+      if (els.length > 0) {
+        searchRoots = els;
+        break;
+      }
+    }
+    if (searchRoots.length === 0) searchRoots = [document.body];
+
+    const seen = new Set<string>();
+    const links: string[] = [];
+
+    for (const root of searchRoots) {
+      for (const a of Array.from(root.querySelectorAll("a[href]"))) {
+        const href = (a as HTMLAnchorElement).href;
+        if (!href.startsWith(origin)) continue;
+        try {
+          const path = new URL(href).pathname;
+          const isProduct = productPathKeywords.some((kw) => path.includes(kw));
+          if (isProduct && !seen.has(href)) {
+            seen.add(href);
+            links.push(href);
+          }
+        } catch { /* ignore malformed href */ }
+      }
+    }
+
+    return links;
+  }, origin);
 }
 
 // ─── Extract visible text ─────────────────────────────────────────────────────
